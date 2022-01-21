@@ -1,0 +1,62 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Download Workflow Artifact
+
+# Controls when the workflow will run
+inputs:
+  WORKFLOW_WITH_ARTIFACT:
+    required: true
+    type: string
+  OUTPUT_ARTIFACT_NAME:
+    required: true
+    type: string
+  REPO_ACCESS_TOKEN:
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  # Searches repo for named workflow and downloads latest artifact(s) into this runner
+  steps:
+    - name: grab artifact from latest successful workflow run
+      uses: actions/github-script@v5
+      env:
+        WORKFLOW_WITH_ARTIFACT: "${{ inputs.WORKFLOW_WITH_ARTIFACT }}"
+      with:
+        github-token: ${{ inputs.REPO_ACCESS_TOKEN }}
+        script: |
+          const owner = context.payload.repository.owner.login
+          const repo = context.payload.repository.name
+          const workflow = process.env.WORKFLOW_WITH_ARTIFACT
+          var listWorkflowRuns = await github.rest.actions.listWorkflowRuns({owner:owner, repo: repo, workflow_id:workflow})
+          var workflow_runs = listWorkflowRuns.data.workflow_runs
+          var run_number = 0, run_id = 0
+          for (var workflow_run of workflow_runs) {
+            if(workflow_run.status === 'completed' && workflow_run.conclusion === 'success' && workflow_run.run_number > run_number) {
+              run_number = workflow_run.run_number
+              run_id = workflow_run.id
+            }
+          }
+          var listWorkflowRunArtifacts = await github.rest.actions.listWorkflowRunArtifacts({owner:owner, repo:repo, run_id:run_id})
+          var artifacts = listWorkflowRunArtifacts.data.artifacts
+          const fs = require('fs')
+          var callback = (err) => {
+            if (err) throw err;
+          }
+          var artifact = artifacts[0]
+          var downloadArtifact = await github.rest.actions.downloadArtifact({owner: owner, repo: repo, artifact_id: artifact.id, archive_format: 'zip'})
+          var filename = artifact.name + '_' + artifact.id + '.zip'
+          fs.writeFile(filename, Buffer.from(downloadArtifact.data), callback)
+          core.exportVariable('WORKFLOW_ARTIFACT_NAME', filename)
+
+    - name: unzip archive
+      shell: bash
+      run: |
+        unzip $WORKFLOW_ARTIFACT_NAME && rm $WORKFLOW_ARTIFACT_NAME
+        ls
+    - name: upload artifact to ~this~ workflow
+      uses: actions/upload-artifact@master
+      with:
+        retention-days: 1
+        name: ${{ inputs.OUTPUT_ARTIFACT_NAME }}
+        path: ./*
